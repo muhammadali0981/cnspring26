@@ -1,0 +1,147 @@
+====================================================================
+       EXPLANATION — HTTP Proxy Server (Assignment 1)
+       CS3001 Computer Networks, Spring 2026
+====================================================================
+
+WHAT IS THIS?
+─────────────
+This is a simple HTTP proxy server written in Python using only the
+standard library (sockets and threading). A proxy sits between your
+browser and the internet: your browser sends requests to the proxy,
+the proxy forwards them to the real website, gets the response, and
+sends it back to your browser.
+
+    Browser  ──►  Proxy Server  ──►  Real Website (e.g. example.com)
+    Browser  ◄──  Proxy Server  ◄──  Real Website
+
+
+HOW TO RUN
+──────────
+    python proxy.py 8888
+
+Replace 8888 with any port number you want. Then configure your
+browser (Firefox/Chrome) to use HTTP proxy: localhost:8888
+
+
+STEP-BY-STEP CODE EXPLANATION
+─────────────────────────────
+
+1) COMMAND LINE ARGUMENT (main function, bottom of file)
+   - The program reads the port number from the command line.
+   - Example: "python proxy.py 8888" → port = 8888
+
+2) CREATE LISTENING SOCKET (main function)
+   - We create a TCP socket and bind it to 0.0.0.0:<port>.
+   - 0.0.0.0 means "listen on all network interfaces".
+   - proxy_socket.listen(100) allows up to 100 queued connections.
+
+3) ACCEPT LOOP (main function)
+   - The server sits in a while-loop calling accept().
+   - Each time a browser connects, accept() returns a new socket
+     for that specific client.
+   - We check if we're under the MAX_CONNECTIONS limit (100).
+
+4) SPAWN A THREAD FOR EACH CLIENT (main function)
+   - For each new client, we start a new thread that runs
+     handle_client(). This lets us handle multiple browser
+     requests at the same time (concurrency).
+   - The assignment says to use fork(), but fork() doesn't work
+     on Windows. Threading does the same job — each thread handles
+     one client independently and concurrently.
+
+5) RECEIVE THE REQUEST (handle_client, step 1)
+   - We read bytes from the client socket until we see \r\n\r\n
+     which marks the end of the HTTP headers.
+
+6) PARSE THE REQUEST (parse_request function)
+   - We split the raw text into lines.
+   - The FIRST line is the "request line":
+         GET http://example.com/page HTTP/1.0
+   - We extract:
+       • method  = GET
+       • url     = http://example.com/page
+       • version = HTTP/1.0
+   - Then we parse each header line (e.g. "Host: example.com").
+   - We use Python's urlparse() to break the URL into:
+       • host = example.com
+       • port = 80 (default if not specified)
+       • path = /page
+
+7) CHECK THE METHOD (handle_client, step 3)
+   - If the method is NOT "GET", we send back a
+     "501 Not Implemented" error response. The assignment says
+     we only need to support GET.
+
+8) BUILD FORWARD REQUEST (handle_client, step 4)
+   - We create a NEW HTTP request to send to the real server.
+   - Key difference: the browser sends an absolute URL like
+         GET http://example.com/page HTTP/1.0
+     but the real server expects a relative path like
+         GET /page HTTP/1.0
+   - We also add "Host:" and "Connection: close" headers.
+   - We use HTTP/1.0 so the server closes the connection when done
+     (simpler than HTTP/1.1 keep-alive).
+
+9) CONNECT TO REMOTE SERVER (handle_client, step 5)
+   - We create a new TCP socket and connect to the website's
+     IP address on the right port (usually 80).
+   - We send our forward request.
+   - If connection fails, we return "502 Bad Gateway" to client.
+
+10) RELAY THE RESPONSE (handle_client, step 6)
+    - We read data from the remote server in chunks (4096 bytes).
+    - Each chunk is immediately sent to the browser.
+    - When the server closes the connection (no more data),
+      we stop and close both sockets.
+
+11) ERROR HANDLING (http_error function)
+    - For bad requests → 400 Bad Request
+    - For non-GET methods → 501 Not Implemented
+    - For connection failures → 502 Bad Gateway
+    - For too many connections → 503 Service Unavailable
+
+
+KEY CONCEPTS FROM THE ASSIGNMENT
+─────────────────────────────────
+
+• HTTP/1.0 Transaction:
+    Client sends:   GET /path HTTP/1.0\r\nHeaders\r\n\r\n
+    Server replies:  HTTP/1.0 200 OK\r\nHeaders\r\n\r\nBody
+    Server closes connection.
+
+• Absolute URI vs Relative URI:
+    Browser → Proxy:  GET http://example.com/page HTTP/1.0   (absolute)
+    Proxy → Server:   GET /page HTTP/1.0                     (relative)
+
+• Concurrency:
+    Each client gets its own thread (equivalent to fork on Linux).
+    Max 100 concurrent connections.
+
+• Error codes used:
+    400 — Bad Request (malformed request/headers)
+    501 — Not Implemented (methods other than GET)
+    502 — Bad Gateway (can't reach remote server)
+    503 — Service Unavailable (too many connections)
+
+
+HOW TO CONFIGURE BROWSER
+─────────────────────────
+
+Firefox:
+  Settings → General → scroll to Network Settings → Settings...
+  Select "Manual proxy configuration"
+  HTTP Proxy: localhost    Port: 8888
+  Check "Also use this proxy for HTTPS" (only HTTP will work though)
+
+Chrome:
+  Settings → System → Open your computer's proxy settings
+  Set HTTP proxy to localhost:8888
+
+NOTE: This proxy only handles HTTP (not HTTPS). So test with
+      http:// URLs like http://example.com or http://httpbin.org
+
+
+FILE STRUCTURE
+──────────────
+proxy.py          — The main proxy server code
+explanation.txt   — This file (what you're reading now)
