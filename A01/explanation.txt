@@ -6,7 +6,7 @@
 WHAT IS THIS?
 ─────────────
 This is a simple HTTP proxy server written in Python using only the
-standard library (sockets and threading). A proxy sits between your
+standard library (sockets and os.fork()). A proxy sits between your
 browser and the internet: your browser sends requests to the proxy,
 the proxy forwards them to the real website, gets the response, and
 sends it back to your browser.
@@ -41,13 +41,19 @@ STEP-BY-STEP CODE EXPLANATION
      for that specific client.
    - We check if we're under the MAX_CONNECTIONS limit (100).
 
-4) SPAWN A THREAD FOR EACH CLIENT (main function)
-   - For each new client, we start a new thread that runs
-     handle_client(). This lets us handle multiple browser
-     requests at the same time (concurrency).
-   - The assignment says to use fork(), but fork() doesn't work
-     on Windows. Threading does the same job — each thread handles
-     one client independently and concurrently.
+4) FORK A CHILD PROCESS FOR EACH CLIENT (main function)
+   - For each new client, we call os.fork() to create a new
+     child process that runs handle_client(). This lets us handle
+     multiple browser requests at the same time (concurrency).
+   - fork() duplicates the current process. The child process
+     (pid == 0) handles the client request, while the parent
+     continues accepting new connections.
+   - The child closes the listening socket (it doesn't need it)
+     and the parent closes the client socket (it doesn't need it).
+   - After the child finishes handling the request, it calls
+     os._exit(0) to terminate cleanly.
+   - NOTE: os.fork() is a Unix/Linux system call. This proxy
+     must be run on Linux or WSL (Windows Subsystem for Linux).
 
 5) RECEIVE THE REQUEST (handle_client, step 1)
    - We read bytes from the client socket until we see \r\n\r\n
@@ -94,7 +100,16 @@ STEP-BY-STEP CODE EXPLANATION
     - When the server closes the connection (no more data),
       we stop and close both sockets.
 
-11) ERROR HANDLING (http_error function)
+11) REAPING ZOMBIE PROCESSES (reap_children & sigchld_handler)
+    - When a child process finishes, it becomes a "zombie" until
+      the parent calls waitpid() to collect its exit status.
+    - reap_children() is called in the accept loop to clean up
+      any finished child processes using os.waitpid(-1, os.WNOHANG).
+    - A SIGCHLD signal handler is also installed so that finished
+      children are reaped automatically when the OS notifies us.
+    - This prevents zombie processes from accumulating.
+
+12) ERROR HANDLING (http_error function)
     - For bad requests → 400 Bad Request
     - For non-GET methods → 501 Not Implemented
     - For connection failures → 502 Bad Gateway
@@ -113,9 +128,11 @@ KEY CONCEPTS FROM THE ASSIGNMENT
     Browser → Proxy:  GET http://example.com/page HTTP/1.0   (absolute)
     Proxy → Server:   GET /page HTTP/1.0                     (relative)
 
-• Concurrency:
-    Each client gets its own thread (equivalent to fork on Linux).
-    Max 100 concurrent connections.
+• Concurrency via fork():
+    Each client gets its own child process via os.fork().
+    The parent process continues accepting new connections.
+    Max 100 concurrent child processes.
+    Zombie processes are reaped via SIGCHLD handler and waitpid().
 
 • Error codes used:
     400 — Bad Request (malformed request/headers)

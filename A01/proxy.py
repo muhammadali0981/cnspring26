@@ -11,18 +11,18 @@ Then configure your browser to use localhost:<port> as HTTP proxy.
 """
 
 import sys
+import os
+import signal
 import socket
-import threading
 from urllib.parse import urlparse
 
 # ─── Configuration ───────────────────────────────────────────────
-MAX_CONNECTIONS = 100        # max concurrent client connections
+MAX_CONNECTIONS = 100        # max concurrent child processes
 BUFFER_SIZE     = 4096       # bytes to read at a time
 TIMEOUT         = 10         # socket timeout in seconds
 
-# Track active threads
-active_threads = 0
-thread_lock = threading.Lock()
+# Track active child processes
+active_children = 0
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -117,8 +117,6 @@ def parse_request(raw_request):
 # ══════════════════════════════════════════════════════════════════
 def handle_client(client_socket, client_address):
     """Handle one client: read request, forward to server, relay response."""
-    global active_threads
-
     try:
         client_socket.settimeout(TIMEOUT)
 
@@ -206,16 +204,38 @@ def handle_client(client_socket, client_address):
         except:
             pass
 
-    finally:
-        with thread_lock:
-            active_threads -= 1
-
 
 # ══════════════════════════════════════════════════════════════════
 #  Main: start the proxy server
 # ══════════════════════════════════════════════════════════════════
+def reap_children():
+    """Reap any finished child processes to avoid zombies."""
+    global active_children
+    while active_children > 0:
+        try:
+            pid, _ = os.waitpid(-1, os.WNOHANG)
+            if pid == 0:
+                break  # no more finished children
+            active_children -= 1
+        except ChildProcessError:
+            break  # no child processes
+
+
+def sigchld_handler(signum, frame):
+    """Handle SIGCHLD to reap zombie child processes."""
+    global active_children
+    while True:
+        try:
+            pid, _ = os.waitpid(-1, os.WNOHANG)
+            if pid == 0:
+                break
+            active_children -= 1
+        except ChildProcessError:
+            break
+
+
 def main():
-    global active_threads
+    global active_children
 
     # --- Get port from command line ---
     if len(sys.argv) != 2:
@@ -229,6 +249,9 @@ def main():
         print("Error: port must be a number")
         sys.exit(1)
 
+    # --- Set up SIGCHLD handler to reap zombie processes ---
+    signal.signal(signal.SIGCHLD, sigchld_handler)
+
     # --- Create the listening socket ---
     proxy_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     proxy_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -237,7 +260,7 @@ def main():
 
     print("=" * 55)
     print(f"  HTTP Proxy Server running on port {port}")
-    print(f"  Max concurrent connections: {MAX_CONNECTIONS}")
+    print(f"  Max concurrent child processes: {MAX_CONNECTIONS}")
     print("=" * 55)
     print("  Configure your browser proxy to: localhost:" + str(port))
     print("  Press Ctrl+C to stop.\n")
@@ -245,20 +268,33 @@ def main():
     # --- Main accept loop ---
     try:
         while True:
-            client_socket, client_address = proxy_socket.accept()
+            try:
+                client_socket, client_address = proxy_socket.accept()
+            except OSError:
+                # accept() can be interrupted by SIGCHLD, just retry
+                continue
 
-            with thread_lock:
-                if active_threads >= MAX_CONNECTIONS:
-                    print(f"  [!] Max connections reached, rejecting {client_address}")
-                    client_socket.sendall(http_error(503, "Service Unavailable"))
-                    client_socket.close()
-                    continue
-                active_threads += 1
+            # Reap any finished child processes
+            reap_children()
 
-            # Spawn a new thread for each client (like fork() but works on Windows)
-            t = threading.Thread(target=handle_client, args=(client_socket, client_address))
-            t.daemon = True
-            t.start()
+            if active_children >= MAX_CONNECTIONS:
+                print(f"  [!] Max connections reached, rejecting {client_address}")
+                client_socket.sendall(http_error(503, "Service Unavailable"))
+                client_socket.close()
+                continue
+
+            # Fork a new process for each client request
+            pid = os.fork()
+
+            if pid == 0:
+                # ── Child process ──
+                proxy_socket.close()  # child doesn't need the listening socket
+                handle_client(client_socket, client_address)
+                os._exit(0)  # exit child process
+            else:
+                # ── Parent process ──
+                active_children += 1
+                client_socket.close()  # parent doesn't need the client socket
 
     except KeyboardInterrupt:
         print("\n  [*] Shutting down proxy server...")
