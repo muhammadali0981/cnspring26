@@ -1,22 +1,10 @@
-"""
-HTTP Proxy Server - Assignment 1
-CS3001 Computer Networks, Spring 2026
-FAST-NUCES Karachi
-
-Usage:
-    python proxy.py <port>
-    Example: python proxy.py 8888
-
-Then configure your browser to use localhost:<port> as HTTP proxy.
-"""
-
 import sys
 import os
 import signal
 import socket
 from urllib.parse import urlparse
 
-# ─── Configuration ───────────────────────────────────────────────
+
 MAX_CONNECTIONS = 100        # max concurrent child processes
 BUFFER_SIZE     = 4096       # bytes to read at a time
 TIMEOUT         = 10         # socket timeout in seconds
@@ -25,11 +13,9 @@ TIMEOUT         = 10         # socket timeout in seconds
 active_children = 0
 
 
-# ══════════════════════════════════════════════════════════════════
-#  Helper: build an HTTP error response
-# ══════════════════════════════════════════════════════════════════
+
 def http_error(status_code, reason):
-    """Return a complete HTTP/1.0 error response as bytes."""
+    
     body = (
         f"<html><body>"
         f"<h1>{status_code} {reason}</h1>"
@@ -46,21 +32,14 @@ def http_error(status_code, reason):
     return response.encode()
 
 
-# ══════════════════════════════════════════════════════════════════
-#  Helper: parse the raw HTTP request from the client
-# ══════════════════════════════════════════════════════════════════
 def parse_request(raw_request):
-    """
-    Parse the raw HTTP request bytes.
-    Returns a dict with: method, url, version, host, port, path, headers
-    Raises ValueError on bad request.
-    """
+
     try:
         # Decode and split into lines
         request_text = raw_request.decode("utf-8", errors="replace")
         lines = request_text.split("\r\n")
 
-        # --- Parse the request line ---
+        # Parse the request line 
         request_line = lines[0]
         parts = request_line.split()
         if len(parts) != 3:
@@ -72,7 +51,7 @@ def parse_request(raw_request):
         if version not in ("HTTP/1.0", "HTTP/1.1"):
             raise ValueError("Unsupported HTTP version")
 
-        # --- Parse headers ---
+        # Parse headers 
         headers = {}
         i = 1
         while i < len(lines) and lines[i] != "":
@@ -85,7 +64,7 @@ def parse_request(raw_request):
             headers[key] = value
             i += 1
 
-        # --- Parse the absolute URI ---
+        # Parse the absolute URI 
         parsed = urlparse(url)
         if not parsed.hostname:
             raise ValueError("URL must be in absolute form (e.g. http://host/path)")
@@ -112,15 +91,13 @@ def parse_request(raw_request):
         raise ValueError(f"Failed to parse request: {e}")
 
 
-# ══════════════════════════════════════════════════════════════════
-#  Core: handle one client connection
-# ══════════════════════════════════════════════════════════════════
+
 def handle_client(client_socket, client_address):
     """Handle one client: read request, forward to server, relay response."""
     try:
         client_socket.settimeout(TIMEOUT)
 
-        # ---- 1. Receive the full request from the client ----
+        #  Receive the full request from the client 
         raw_request = b""
         while True:
             chunk = client_socket.recv(BUFFER_SIZE)
@@ -133,7 +110,7 @@ def handle_client(client_socket, client_address):
             client_socket.close()
             return
 
-        # ---- 2. Parse the request ----
+        # Parse the request 
         try:
             req = parse_request(raw_request)
         except ValueError as e:
@@ -144,14 +121,14 @@ def handle_client(client_socket, client_address):
 
         print(f"  [>] {req['method']} {req['url']} from {client_address}")
 
-        # ---- 3. Only GET is supported ----
+        # Only GET is supported 
         if req["method"] != "GET":
             print(f"  [!] Method '{req['method']}' not implemented")
             client_socket.sendall(http_error(501, "Not Implemented"))
             client_socket.close()
             return
 
-        # ---- 4. Build the request to send to the remote server ----
+        # Build the request to send to the remote server 
         # Convert the absolute URI to a relative path for the origin server
         forward_request = f"GET {req['path']} HTTP/1.0\r\n"
         forward_request += f"Host: {req['host']}\r\n"
@@ -168,7 +145,7 @@ def handle_client(client_socket, client_address):
         forward_request += "Connection: close\r\n"
         forward_request += "\r\n"
 
-        # ---- 5. Connect to the remote server ----
+        # Connect to the remote server 
         try:
             server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             server_socket.settimeout(TIMEOUT)
@@ -180,7 +157,7 @@ def handle_client(client_socket, client_address):
             client_socket.close()
             return
 
-        # ---- 6. Receive the response from server and relay to client ----
+        # Receive the response from server and relay to client 
         try:
             while True:
                 data = server_socket.recv(BUFFER_SIZE)
@@ -192,7 +169,7 @@ def handle_client(client_socket, client_address):
         except Exception as e:
             print(f"  [!] Error relaying data: {e}")
 
-        # ---- 7. Clean up ----
+        # Clean up 
         server_socket.close()
         client_socket.close()
         print(f"  [<] Done: {req['url']}")
@@ -205,11 +182,7 @@ def handle_client(client_socket, client_address):
             pass
 
 
-# ══════════════════════════════════════════════════════════════════
-#  Main: start the proxy server
-# ══════════════════════════════════════════════════════════════════
 def reap_children():
-    """Reap any finished child processes to avoid zombies."""
     global active_children
     while active_children > 0:
         try:
@@ -222,7 +195,6 @@ def reap_children():
 
 
 def sigchld_handler(signum, frame):
-    """Handle SIGCHLD to reap zombie child processes."""
     global active_children
     while True:
         try:
@@ -237,7 +209,7 @@ def sigchld_handler(signum, frame):
 def main():
     global active_children
 
-    # --- Get port from command line ---
+
     if len(sys.argv) != 2:
         print("Usage: python proxy.py <port>")
         print("Example: python proxy.py 8888")
@@ -249,10 +221,10 @@ def main():
         print("Error: port must be a number")
         sys.exit(1)
 
-    # --- Set up SIGCHLD handler to reap zombie processes ---
+  
     signal.signal(signal.SIGCHLD, sigchld_handler)
 
-    # --- Create the listening socket ---
+    # Create the listening socket 
     proxy_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     proxy_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     proxy_socket.bind(("0.0.0.0", port))
@@ -265,7 +237,7 @@ def main():
     print("  Configure your browser proxy to: localhost:" + str(port))
     print("  Press Ctrl+C to stop.\n")
 
-    # --- Main accept loop ---
+    # Main accept loop 
     try:
         while True:
             try:
@@ -287,12 +259,12 @@ def main():
             pid = os.fork()
 
             if pid == 0:
-                # ── Child process ──
+                # Child process
                 proxy_socket.close()  # child doesn't need the listening socket
                 handle_client(client_socket, client_address)
                 os._exit(0)  # exit child process
             else:
-                # ── Parent process ──
+                # Parent process 
                 active_children += 1
                 client_socket.close()  # parent doesn't need the client socket
 
